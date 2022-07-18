@@ -1,0 +1,76 @@
+workflows:
+  android-build:
+    environment:
+      groups:
+        - mobsf
+        - signing_apk
+        - firebase_distribution
+    scripts:
+      - name: Prepare Dependencies Environment
+        script: | 
+          set -e
+          sudo gem install bundler
+          bundle install
+
+      - name: Clean Build
+        script: | 
+          set -e
+          ./gradlew clean
+          ./gradlew :app:assembleDebug
+        
+      - name: Lint & Detekt
+        script: | 
+          set -e
+          ./gradlew lint
+          ./gradlew detekt
+
+      - name: Test
+        script: | 
+          set -e
+          ./gradlew testDebug
+
+      - name: Create Release APK
+        script: | 
+          set -e
+          ./gradlew :app:assembleRelease
+
+      - name: Sign and Align APK
+        script: | 
+          set -euo pipefail
+          ${ANDROID_SDK_ROOT}/build-tools/30.0.3/zipalign -c 4 ${FCI_BUILD_DIR}/app/build/outputs/apk/release/app-release-unsigned.apk
+          mkdir -p ./signtmp/keystore
+          base64 -d <<< "${ENCODED_KEYSTORE}" > ./signtmp/keystore/decoded_keystore_file.jks
+          ${ANDROID_SDK_ROOT}/build-tools/30.0.3/apksigner sign --ks ./signtmp/keystore/decoded_keystore_file.jks --ks-key-alias "${SIGNING_KEY_ALIAS}" --ks-pass pass:"${SIGNING_STORE_PASSWORD}" --key-pass pass:"${SIGNING_KEY_PASSWORD}" --out ./app/build/outputs/apk/release/app-signed-codemagic.apk ./app/build/outputs/apk/release/app-release-unsigned.apk
+          ${ANDROID_SDK_ROOT}/build-tools/30.0.3/zipalign -c 4 ${FCI_BUILD_DIR}/app/build/outputs/apk/release/app-signed-codemagic.apk
+
+      - name: Validação de Segurança
+        script: | 
+          set -euo pipefail
+          curl --show-error --fail -o mobsf_upload_result.json -F "file=@${FCI_BUILD_DIR}/app/build/outputs/apk/release/app-signed-codemagic.apk" ${MOBSF_URL}/api/v1/upload -H Authorization:${MOBSF_TOKEN}
+          mobsf_upload_hash=$(jq -r '.hash' mobsf_upload_result.json)
+          curl --show-error --fail -o mobsf_scan_result.json -X POST --url ${MOBSF_URL}/api/v1/scan --data scan_type="apk&file_name=app-signed-codemagic.apk&hash=${mobsf_upload_hash}" -H Authorization:${MOBSF_TOKEN}
+          curl --show-error --fail -o mobsf_json_report.json -X POST --url ${MOBSF_URL}/api/v1/report_json --data hash=$mobsf_upload_hash -H Authorization:${MOBSF_TOKEN}
+          mobsf_security_score=$(jq -r '.security_score' mobsf_json_report.json)
+          curl --show-error --fail -X POST --url ${MOBSF_URL}/api/v1/delete_scan --data hash=$mobsf_upload_hash -H Authorization:${MOBSF_TOKEN}
+          mobsf_security_score=$(($mobsf_security_score + 0))
+          if [[ $mobsf_security_score -gt 94 ]]
+          then
+            echo "Passou na segurança com nota: $mobsf_security_score ."
+            exit 0
+          else
+            echo "Falhou na segurança com nota: $mobsf_security_score ."
+            exit 1
+          fi
+
+      - name: Deploy to Firebase
+        script: | 
+          set -euo pipefail
+          LC_ALL=en_US.UTF-8
+          LANG=en_US.UTF-8
+          export fastlane_apk_distribution_path="${FCI_BUILD_DIR}/app/build/outputs/apk/release/app-signed-codemagic.apk"
+          export ci_provider=Codemagic 
+          bundle exec fastlane firebase
+
+    cache:
+      cache_paths:
+        - $HOME/.gradle/caches

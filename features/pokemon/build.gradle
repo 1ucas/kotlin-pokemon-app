@@ -1,0 +1,38 @@
+apply plugin: 'com.android.library'
+apply from: rootProject.file('buildsystem/androidProjectConfig.gradle')
+
+android {
+
+    buildTypes {
+        debug {
+            testCoverageEnabled true
+        }
+    }
+}
+
+dependencies {
+    def deps = rootProject.ext.dependencies
+    def testDeps = rootProject.ext.testDependencies
+
+    implementation project(":libraries:ui_components")
+    implementation project(":libraries:network")
+    implementation project(":libraries:common")
+
+    implementation deps.appCompat
+    implementation deps.glide
+
+    implementation deps.constraintLayout
+
+    implementation deps.koin
+    implementation deps.koinViewModel
+
+    implementation deps.viewModelKtx
+    implementation deps.lifecycleKtx
+    implementation deps.lifecycleExt
+
+    implementation deps.navigationFragment
+    implementation deps.navigationComponent
+
+    testImplementation project(":libraries:testutils")
+    testImplementation testDeps.koinTest
+}

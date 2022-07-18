@@ -1,0 +1,102 @@
+name: Android CI
+
+on: workflow_dispatch
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup JDK 8
+      uses: actions/setup-java@v2
+      with:
+        java-version: '8'
+        distribution: 'adopt'
+        cache: gradle
+
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+      
+    - name: Prepare Dependencies Environment
+      run: | 
+        set -e
+        sudo apt-get install -y ruby-full rbenv unzip wget
+        sudo gem install bundler
+        bundle install
+        
+    - name: Prepare Android Environment
+      run: | 
+        set -e
+        wget 'https://dl.google.com/android/repository/sdk-tools-linux-4333796.zip' -P /tmp
+        unzip -d /opt/android /tmp/sdk-tools-linux-4333796.zip
+        yes | /opt/android/tools/bin/sdkmanager --update
+        yes | /opt/android/tools/bin/sdkmanager --install "build-tools;30.0.3"
+        yes | /opt/android/tools/bin/sdkmanager --licenses 
+        echo "/opt/android/build-tools/30.0.3" >> $GITHUB_PATH
+
+    - name: Clean Build
+      run: | 
+        ./gradlew clean
+        ./gradlew :app:assembleDebug
+        
+    - name: Lint & Detekt
+      run: | 
+        ./gradlew lint
+        ./gradlew detekt
+        
+    - name: Test
+      run: | 
+        ./gradlew testDebug
+    
+    - name: Create Release APK
+      run: | 
+        ./gradlew :app:assembleRelease
+            
+    - name: Sign and Align APK
+      env:
+        ENCODED_STRING: ${{ secrets.POKEMON_TCG_KEYSTORE_RELEASE }}
+        SIGNING_KEY_ALIAS: ${{ secrets.POKEMON_TCG_KEY_ALIAS }}
+        SIGNING_KEY_PASSWORD: ${{ secrets.POKEMON_TCG_KEY_PASSWORD }}
+        SIGNING_STORE_PASSWORD: ${{ secrets.POKEMON_TCG_KEYSTORE_PASSWORD }}
+      run: | 
+        set -e
+        zipalign -c 4 $GITHUB_WORKSPACE/app/build/outputs/apk/release/app-release-unsigned.apk
+        mkdir -p /tmp/keystore
+        echo $ENCODED_STRING | base64 -di > /tmp/keystore/decoded_keystore_file.jks
+        apksigner sign --ks /tmp/keystore/decoded_keystore_file.jks --ks-key-alias $SIGNING_KEY_ALIAS --ks-pass pass:$SIGNING_STORE_PASSWORD --key-pass pass:$SIGNING_KEY_PASSWORD --out ./app/build/outputs/apk/release/app-signed-github.apk ./app/build/outputs/apk/release/app-release-unsigned.apk
+        zipalign -c 4 $GITHUB_WORKSPACE/app/build/outputs/apk/release/app-signed-github.apk
+
+    - name: Validação de Segurança
+      env:
+        MOBSF_ENV_URL: ${{ secrets.MOBSF_URL }}
+        MOBSF_ENV_TOKEN: ${{ secrets.MOBSF_TOKEN }}
+      run: | 
+        set -euo pipefail
+        curl --show-error --fail -o mobsf_upload_result.json -F "file=@app/build/outputs/apk/release/app-signed-github.apk" ${{ env.MOBSF_ENV_URL }}/api/v1/upload -H Authorization:${{ env.MOBSF_ENV_TOKEN }}
+        mobsf_upload_hash=$(jq -r '.hash' mobsf_upload_result.json)
+        curl --show-error --fail -o mobsf_scan_result.json -X POST --url ${{ env.MOBSF_ENV_URL }}/api/v1/scan --data scan_type="apk&file_name=app-signed-github.apk&hash=${mobsf_upload_hash}" -H Authorization:${{ env.MOBSF_ENV_TOKEN }}
+        curl --show-error --fail -o mobsf_json_report.json -X POST --url ${{ env.MOBSF_ENV_URL }}/api/v1/report_json --data hash=$mobsf_upload_hash -H Authorization:${{ env.MOBSF_ENV_TOKEN }}
+        mobsf_security_score=$(jq -r '.security_score' mobsf_json_report.json)
+        curl --show-error --fail -X POST --url ${{ env.MOBSF_ENV_URL }}/api/v1/delete_scan --data hash=$mobsf_upload_hash -H Authorization:${{ env.MOBSF_ENV_TOKEN }}
+        mobsf_security_score=$(($mobsf_security_score + 0))
+        if [[ $mobsf_security_score -gt 94 ]]
+        then
+          echo "Passou na segurança com nota: $mobsf_security_score ."
+          exit 0
+        else
+          echo "Falhou na segurança com nota: $mobsf_security_score ."
+          exit 1
+        fi
+
+    - name: Deploy to Firebase
+      env:
+        firebase_refresh_token: ${{ secrets.FIREBASE_REFRESH_TOKEN }}
+        firebase_app_id: ${{ secrets.FIREBASE_APP_ID }}
+        ci_provider: "Github Actions"
+        fastlane_apk_distribution_path: "./app/build/outputs/apk/release/app-signed-github.apk"
+      run: | 
+        LC_ALL=en_US.UTF-8 \
+        LANG=en_US.UTF-8 \
+        bundle exec fastlane firebase

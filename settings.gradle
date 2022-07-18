@@ -1,0 +1,10 @@
+include ':libraries:temptestlibrary'
+include ':libraries:common'
+include ':libraries:testutils'
+include ':libraries:ui_components'
+include ':libraries:network'
+include ':features:cards'
+include ':features:pokemon'
+include ':app'
+rootProject.name='PokemonTCG'
+

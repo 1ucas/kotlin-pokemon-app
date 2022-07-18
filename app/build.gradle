@@ -1,0 +1,34 @@
+apply plugin: 'com.android.application'
+apply from: rootProject.file('buildsystem/androidProjectConfig.gradle')
+
+android {
+    defaultConfig {
+        applicationId "com.manobray.pokemontcg"
+    }
+
+    buildTypes {
+        release {
+            debuggable false
+            minifyEnabled true
+        }
+    }
+}
+
+dependencies {
+    def deps = rootProject.ext.dependencies
+    def testDeps = rootProject.ext.testDependencies
+
+    implementation project(":features:cards")
+    implementation project(":features:pokemon")
+    implementation project(":libraries:ui_components")
+    implementation project(":libraries:common")
+
+    implementation deps.koin
+
+    implementation deps.appCompat
+
+    implementation deps.constraintLayout
+
+    testImplementation testDeps.jUnit
+    testImplementation testDeps.koinTest
+}
